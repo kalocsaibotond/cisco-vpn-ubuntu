@@ -1,0 +1,399 @@
+#cloud-config
+
+autoinstall:
+  version: 1
+
+  interactive-sections:
+    - network
+    - storage
+
+  source:
+    search_drivers: true
+    id: ubuntu-server-minimal
+
+  drivers:
+    install: true
+
+  identity:
+    realname: 'VPN user'
+    username: vpnuser
+    password: "$1$V0/SeOln$5KjvZfqIzL.w1HMehRUN6."   # The password is vpnuser .
+    hostname: ubuntu-pc
+
+  keyboard:
+    layout: hu
+
+  timezone: "Europe/Budapest"
+
+  network:
+    version: 2
+    ethernets:
+      modern-interfaces:
+        match:
+          name: "en*"
+        dhcp4: true
+      legacy-interfaces:
+        match:
+          name: "eth*"
+        dhcp4: true
+
+  apt:
+    mirror-selection:
+      primary:
+        - uri: "http://hu.archive.ubuntu.com/ubuntu"
+    sources:
+      xtradeb.list:
+        sources: "deb https://ppa.launchpadcontent.net/xtradeb/apps/ubuntu jammy main"
+        keyid: 5301 FA4F D932 44FB C6F6 1499 82BB 6851 C64F 6880
+
+  updates: all
+
+  codecs:
+    install: true
+
+  late-commands:
+    - curtin in-target -- systemctl set-default multi-user.target
+    - curtin in-target -- systemctl disable NetworkManager.service
+    - curtin in-target -- systemctl disable NetworkManager-wait-online.service
+    - |  # Apply Caps Lock - Esc key swap.
+      root_path=/target
+      mkdir -p "$root_path/etc/default"
+      if ! grep -q "XKBOPTIONS=" "$root_path/etc/default/keyboard"; then
+        echo 'set number
+      $ append
+
+      XKBOPTIONS="caps:swapescape"
+      .
+      xit' | ex "$root_path/etc/default/keyboard"
+
+      elif ! grep -q "caps:swapescape" "$root_path/etc/default/keyboard"; then
+        echo 'set number
+      /XKBOPTIONS=/
+      . s/"\\(.*\\)"/"\\1,caps:swapescape"/g
+      xit' | ex "$root_path/etc/default/keyboard"
+
+      fi
+
+  user-data:
+    growpart:
+      mode: auto
+      devices: ['/']
+    resize_rootfs: True
+
+    write_files:
+      - path: /opt/set-up-main-system.sh
+        permissions: '0777'
+        content: |
+          #!/bin/sh
+
+          # This script sets up the main system. Its only argument is the
+          # root partition of the main system. It imports the main system's
+          # fstab into the fstab, and also adds the ubuntu system's root partition
+          # to main system. Then it registers the ubuntu system into the main
+          # system's GRUB enties and makes the main system the host of GRUB.
+
+          device_name=$1
+          device_path="/dev/$device_name"
+          if [ ! -b "$device_path" ]; then
+            echo "Invalid device name for the main system root partition! Cancelling configuration."
+            return 1
+          fi
+
+          get_uuid_from_fstab()(
+            fstab_mount_point=$1
+            root_path=$2
+            if [ ! -f "$root_path/etc/fstab" ]; then
+              echo "Could not find /etc/fstab in the given root!"
+              return 1
+            fi
+            if [ "swap" == "$fstab_mount_point" ]; then
+              uuids="$(awk \
+                '( $1 ~ /UUID=.*/  && $3 == "swap" ){ print substr($1, 6) }' \
+                "$root_path/etc/fstab")"
+              echo "$uuids"
+            else
+              uuid="$(awk -v "fstab_mount_point=$fstab_mount_point" \
+                '( $1 ~ /UUID=.*/  && $2 == fstab_mount_point ){ print substr($1, 6) }' \
+                "$root_path/etc/fstab")"
+              echo "$uuid"
+            fi
+          )
+
+          #################################################################
+          # Configure Cisco VPN ubuntu /etc/fstab and mount its partitions.
+          #################################################################
+
+          root_uuid=$(findmnt -no UUID /)
+          fstab="UUID=$root_uuid / ext4 defaults 0 0"
+
+          mount_point="/mnt/main-root"
+          if ! findmnt -S "$device_path" -M "$mount_point" > /dev/null; then
+            sudo mkdir -p "$mount_point"
+            if ! sudo mount "$device_path" "$mount_point"; then
+              echo "Could not mount $device_path to $mount_point . Cancelling install!"
+              return 1
+            fi
+          fi
+          main_root_uuid=$(get_uuid_from_fstab '/' "$mount_point")
+          fstab="$fstab\nUUID=$main_root_uuid /mnt/main-root ext4 defaults 0 0"
+
+          main_efi_uuid=$(get_uuid_from_fstab "/boot/efi" "$mount_point")
+          if [ -n "$main_efi_uuid" ]; then
+            fstab="$fstab\nUUID=$main_efi_uuid /boot/efi vfat defaults 0 0
+          /boot/efi $mount_point/boot/efi none bind 0 0"
+            sudo mkdir -p "/boot/efi"
+            sudo mkdir -p "$mount_point/boot/efi"
+          fi
+
+          main_home_uuid=$(get_uuid_from_fstab "/home" "$mount_point")
+          if [ -n "$main_home_uuid" ]; then
+            fstab="$fstab\nUUID=$main_home_uuid /mnt/main-root/home ext4 defaults 0 0"
+            sudo mkdir -p "$mount_point/home"
+          fi
+
+          swap_uuids=$(get_uuid_from_fstab "swap" "$mount_point")
+          for swap_uuid in $swap_uuids; do
+            fstab="$fstab\nUUID=$swap_uuid none swap sw 0 0"
+          done
+
+          echo "$fstab" > /tmp/fstab
+          chmod uo+r /tmp/fstab
+          sudo mv /tmp/fstab /etc/fstab
+          sudo mount -a # Mounting added directories.
+          sudo swapon -a # Mounting added swap parititons.
+
+          ##############################################################
+          # Append Cisco VPN Ubuntu root to the main system /etc/fstab .
+          ##############################################################
+
+
+          if ! grep -q "/mnt/cisco-vpn-ubuntu" "$mount_point/etc/fstab"; then
+            echo "set number
+          set noautoindent
+          / \/ / append
+          UUID=$root_uuid /mnt/cisco-vpn-ubuntu ext4 defaults 0 0
+          .
+          xit" | sudo nvim -es  "$mount_point/etc/fstab"
+          else
+            echo "set number
+          set noautoindent
+          /cisco-vpn-ubuntu/ change
+          UUID=$root_uuid /mnt/cisco-vpn-ubuntu ext4 defaults 0 0
+          .
+          xit" | sudo nvim -es "$mount_point/etc/fstab"
+          fi
+
+          ##########################################
+          # Making the main system as the GRUB host.
+          ##########################################
+
+          if ! grep -q "Cisco VPN Ubuntu" "$mount_point/etc/grub.d/40_custom"; then
+            echo "set number
+          set noautoindent
+          $ append
+
+          menuentry \"Cisco VPN Ubuntu (22.04)\" {
+                insmod ext2
+                search --no-floppy --set=root --fs-uuid $root_uuid
+                linux /boot/vmlinuz root=UUID=$root_uuid ro quiet
+                initrd /boot/initrd.img
+          }
+          .
+          xit" | sudo nvim -es "$mount_point/etc/grub.d/40_custom"
+          else
+            echo "set number
+          set noautoindent
+          /Cisco VPN Ubuntu/,/}/ change
+          menuentry \"Cisco VPN Ubuntu (22.04)\" {
+                insmod ext2
+                search --no-floppy --set=root --fs-uuid $root_uuid
+                linux /boot/vmlinuz root=UUID=$root_uuid ro quiet
+                initrd /boot/initrd.img
+          }
+          .
+          xit" | sudo nvim -es "$mount_point/etc/grub.d/40_custom"
+          fi
+
+          drive_device_path=$(lsblk -no pkname "$device_path")
+
+          mount_dirs='/dev /dev/pts /proc /sys /run /tmp'
+          for mount_dir in $mount_dirs; do
+            if [ -z "$(findmnt "$mount_point$mount_dir")" ]; then
+              sudo mount --bind "$mount_dir" "$mount_point$mount_dir"
+            fi
+          done
+          sudo chroot "$mount_point" bash -c "
+          sudo grub-install --root-directory=/ --efi-directory=/boot/efi /dev/$drive_device_path
+          sudo grub-mkconfig -o /boot/grub/grub.cfg
+          "
+          mount_dirs='/dev/pts /dev /proc /sys /run /tmp'
+          for mount_dir in $mount_dirs; do
+            sudo umount "$mount_point$mount_dir"
+          done
+
+      - path: /etc/skel/.profile
+        permissions: '0777'
+        content: |
+          # ~/.profile: executed by the command interpreter for login shells.
+          # This file is not read by bash(1), if ~/.bash_profile or ~/.bash_login
+          # exists.
+          # see /usr/share/doc/bash/examples/startup-files for examples.
+          # the files are located in the bash-doc package.
+
+          # the default umask is set in /etc/profile; for setting the umask
+          # for ssh logins, install and configure the libpam-umask package.
+          #umask 022
+
+          # if running bash
+          if [ -n "$BASH_VERSION" ]; then
+            # include .bashrc if it exists
+            if [ -f "$HOME/.bashrc" ]; then
+              . "$HOME/.bashrc"
+            fi
+          fi
+
+          # set PATH so it includes user's private bin if it exists
+          if [ -d "$HOME/bin" ] ; then
+            PATH="$HOME/bin:$PATH"
+          fi
+
+          # set PATH so it includes user's private bin if it exists
+          if [ -d "$HOME/.local/bin" ] ; then
+            PATH="$HOME/.local/bin:$PATH"
+          fi
+
+          export DISPLAY=:0
+
+      - path: /etc/skel/.xsession
+        permissions: '0777'
+        content: |
+          exec dbus-run-session -- startlxde
+
+      - path: /etc/skel/vpn-launch.sh
+        permissions: '0777'
+        content: |
+          #!/bin/sh
+          dbus-run-session -- /opt/cisco/anyconnect/bin/vpnui &
+
+      - path: /etc/skel/enter-main-chroot.sh
+        permissions: '0777'
+        content: |
+          #!/bin/sh
+          mount_point="/mnt/main-root"
+          lockfile="/run/lock/main_system_chroot_counter.lock"
+
+          mount_directories()(
+            mount_dirs='/dev /dev/pts /proc /sys /run /tmp'
+            for mount_dir in $mount_dirs; do
+              if [ -z "$(findmnt "$mount_point$mount_dir")" ]; then
+                sudo mount --bind "$mount_dir" "$mount_point$mount_dir"
+              fi
+            done
+            if [ -z "$(findmnt  "${mount_point}/mnt/cisco-vpn-ubuntu")" ]; then
+              sudo mkdir -p  "${mount_point}/mnt/cisco-vpn-ubuntu"
+              sudo mount --bind "/" "${mount_point}/mnt/cisco-vpn-ubuntu"
+            fi
+          )
+
+          unmount_directories()(
+            mount_dirs='/dev/pts /dev /proc /sys /run /tmp'
+            for mount_dir in $mount_dirs; do
+              sudo umount "$mount_point$mount_dir"
+            done
+            sudo umount "${mount_point}/mnt/cisco-vpn-ubuntu"
+          )
+
+
+          increase_counter(){
+            if [ ! -f "$lockfile" ]; then
+              counter=1
+            else
+              counter=$(cat $lockfile)
+              counter=$((counter + 1))
+            fi
+            echo "$counter" > $lockfile
+          }
+
+          decrease_counter(){
+            if [ ! -f "$lockfile" ]; then
+              counter=0
+            else
+              counter=$(cat $lockfile)
+              if [ 0 -lt "$counter" ]; then
+                counter=$((counter - 1))
+              else
+                counter=0
+              fi
+            fi
+            echo "$counter" > $lockfile
+          }
+
+          mount_directories
+
+          increase_counter
+
+          sudo chroot "$mount_point" bash
+
+          decrease_counter
+
+          if [ 0 -ge "$counter" ]; then
+            unmount_directories
+          fi
+
+      - path: /etc/skel/enter-main-nspawn.sh
+        permissions: '0777'
+        content: |
+          #!/bin/sh
+
+          bind_args=""
+          for path in /dev/tty*; do
+            bind_args="$bind_args --bind=$path"
+          done
+          for path in /dev/dri/*; do
+            bind_args="$bind_args --bind=$path"
+          done
+          for path in /dev/input/*; do
+            bind_args="$bind_args --bind=$path"
+          done
+          bind_args="$bind_args --bind=/run/udev/data"
+
+          sudo systemd-nspawn -D /mnt/main-root $bind_args \
+            -M main-system \
+
+    runcmd:
+      - [mkdir, -p, /home/vpnuser]
+      - cp -r /etc/skel/** /home/vpnuser/
+      - /opt/*vpn*.sh
+
+    packages:
+      - rfkill
+      - iputils-ping
+    # Desktop
+      - alsa-utils
+      - xorg
+      - xinit
+      - stterm
+      - neovim
+      - less
+    # Stuff needed for the Cisco VPN client.
+      - lxde-core # For vpn client installation.
+      - libwebkit2gtk-4.0-37 # For web SSO authentication.
+      - clamav
+      - ufw
+
+  packages:
+    - rfkill
+    - iputils-ping
+  # Desktop
+    - alsa-utils
+    - xorg
+    - xinit
+    - stterm
+    - neovim
+    - less
+  # Stuff needed for the Cisco VPN client.
+    - lxde-core # For vpn client installation.
+    - libwebkit2gtk-4.0-37 # For web SSO authentication.
+    - clamav
+    - ufw
+
