@@ -106,7 +106,7 @@ autoinstall:
               echo "Could not find /etc/fstab in the given root!"
               return 1
             fi
-            if [ "swap" == "$fstab_mount_point" ]; then
+            if [ "swap" = "$fstab_mount_point" ]; then
               uuids="$(awk \
                 '( $1 ~ /UUID=.*/  && $3 == "swap" ){ print substr($1, 6) }' \
                 "$root_path/etc/fstab")"
