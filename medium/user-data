@@ -286,7 +286,7 @@ autoinstall:
           lockfile="/run/lock/main_system_chroot_counter.lock"
 
           mount_directories()(
-            mount_dirs='/dev /dev/pts /proc /sys /run /tmp'
+            mount_dirs='/dev /dev/pts /dev/shm /dev/snd /proc /sys /run /tmp'
             for mount_dir in $mount_dirs; do
               if [ -z "$(findmnt "$mount_point$mount_dir")" ]; then
                 sudo mount --bind "$mount_dir" "$mount_point$mount_dir"
@@ -296,10 +296,13 @@ autoinstall:
               sudo mkdir -p  "${mount_point}/mnt/cisco-vpn-ubuntu"
               sudo mount --bind "/" "${mount_point}/mnt/cisco-vpn-ubuntu"
             fi
+            sudo chmod -R 666 /dev/pts/*
+            sudo chmod -R 666 /dev/shm/*
+            sudo chmod -R 666 /dev/snd/*
           )
 
           unmount_directories()(
-            mount_dirs='/dev/pts /dev /proc /sys /run /tmp'
+            mount_dirs='/dev/pts /dev/shm /dev/snd /dev /proc /sys /run /tmp'
             for mount_dir in $mount_dirs; do
               sudo umount "$mount_point$mount_dir"
             done
