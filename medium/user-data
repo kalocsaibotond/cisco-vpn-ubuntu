@@ -286,7 +286,7 @@ autoinstall:
           lockfile="/run/lock/main_system_chroot_counter.lock"
 
           mount_directories()(
-            mount_dirs='/dev /dev/pts /dev/shm /dev/snd /proc /sys /run /tmp'
+            mount_dirs='/dev /dev/pts /dev/shm /dev/snd /proc /sys /run /tmp /etc/resolv.conf'
             for mount_dir in $mount_dirs; do
               if [ -z "$(findmnt "$mount_point$mount_dir")" ]; then
                 sudo mount --bind "$mount_dir" "$mount_point$mount_dir"
@@ -302,7 +302,7 @@ autoinstall:
           )
 
           unmount_directories()(
-            mount_dirs='/dev/pts /dev/shm /dev/snd /dev /proc /sys /run /tmp'
+            mount_dirs='/dev/pts /dev/shm /dev/snd /dev /proc /sys /run /tmp /etc/resolv.conf'
             for mount_dir in $mount_dirs; do
               sudo umount "$mount_point$mount_dir"
             done
