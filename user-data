@@ -218,10 +218,13 @@ autoinstall:
           for path in /dev/tty*; do
             bind_args="$bind_args --bind=$path"
           done
+          for path in /dev/input/*; do
+            bind_args="$bind_args --bind=$path"
+          done
           for path in /dev/dri/*; do
             bind_args="$bind_args --bind=$path"
           done
-          for path in /dev/input/*; do
+          for path in /dev/snd/*; do
             bind_args="$bind_args --bind=$path"
           done
           bind_args="$bind_args --bind=/run/udev/data"
