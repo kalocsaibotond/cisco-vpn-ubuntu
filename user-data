@@ -248,6 +248,7 @@ autoinstall:
       - stterm
       - neovim
       - less
+      - physlock
       # Stuff needed for the Cisco VPN client.
       - lxde-core # For vpn client installation.
       - libwebkit2gtk-4.0-37 # For web SSO authentication.
@@ -265,6 +266,7 @@ autoinstall:
     - stterm
     - neovim
     - less
+    - physlock
     # Stuff needed for the Cisco VPN client.
     - lxde-core # For vpn client installation.
     - libwebkit2gtk-4.0-37 # For web SSO authentication.
