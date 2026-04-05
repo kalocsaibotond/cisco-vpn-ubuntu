@@ -237,35 +237,26 @@ autoinstall:
       - path: /etc/skel/.profile
         permissions: "0777"
         content: |
-          # ~/.profile: executed by the command interpreter for login shells.
-          # This file is not read by bash(1), if ~/.bash_profile or ~/.bash_login
-          # exists.
-          # see /usr/share/doc/bash/examples/startup-files for examples.
-          # the files are located in the bash-doc package.
+          # .profile
 
-          # the default umask is set in /etc/profile; for setting the umask
-          # for ssh logins, install and configure the libpam-umask package.
-          #umask 022
-
-          # if running bash
-          if [ -n "$BASH_VERSION" ]; then
-            # include .bashrc if it exists
-            if [ -f "$HOME/.bashrc" ]; then
-              . "$HOME/.bashrc"
-            fi
+          if [ -d $HOME/.profile.d ]; then
+            for f in $HOME/.profile.d/*.sh; do
+              [ -r $f ] && . $f
+            done
+            unset f
           fi
 
-          # set PATH so it includes user's private bin if it exists
-          if [ -d "$HOME/bin" ] ; then
-            PATH="$HOME/bin:$PATH"
-          fi
-
-          # set PATH so it includes user's private bin if it exists
-          if [ -d "$HOME/.local/bin" ] ; then
-            PATH="$HOME/.local/bin:$PATH"
-          fi
-
+      - path: /etc/skel/.profile.d/80-set-display.sh
+        permissions: "0777"
+        content: |
           export DISPLAY=:0
+
+      - path: /etc/skel/.profile.d/99-start-vpn-session.sh
+        permissions: "0777"
+        content: |
+          if [ "/dev/tty1" = "$(tty)" ]; then
+            . $HOME/start-vpn-session.sh
+          fi
 
       - path: /etc/skel/.xsession
         permissions: "0777"
@@ -276,43 +267,36 @@ autoinstall:
         permissions: "0777"
         content: |
           #!/bin/sh
+          echo Wating for Xorg session.
+          until xset -q > /dev/null 2&>1; do
+            sleep 1
+          done
           dbus-run-session -- /opt/cisco/anyconnect/bin/vpnui &
 
-      - path: /etc/skel/enter-main-chroot.sh
+      - path: /etc/skel/chroot-main-utils.sh
         permissions: "0777"
         content: |
           #!/bin/sh
-          mount_point="/mnt/main-root"
+          root_mount_point="/mnt/main-root"
           lockfile="/run/lock/main_system_chroot_counter.lock"
 
-          mount_directories()(
-            mount_dev_dirs='/dev /dev/pts /dev/shm /dev/dri /dev/snd'
-            mount_dirs="$mount_dev_dirs /proc /sys /run /tmp /etc/resolv.conf"
-            for mount_dir in $mount_dirs; do
-              if [ -z "$(findmnt "$mount_point$mount_dir")" ]; then
-                sudo mount --bind "$mount_dir" "$mount_point$mount_dir"
+          mount_chroot_main()(
+            dev_mount_points='/dev /dev/pts /dev/shm /dev/dri /dev/snd'
+            mount_points="$dev_mount_points /proc /sys /run /tmp /etc/resolv.conf"
+            for mount_point in $mount_points; do
+              if [ -z "$(findmnt "$root_mount_point$mount_point")" ]; then
+                sudo mount --bind "$mount_point" "$root_mount_point$mount_point"
               fi
             done
-            if [ -z "$(findmnt  "${mount_point}/mnt/cisco-vpn-ubuntu")" ]; then
-              sudo mkdir -p  "${mount_point}/mnt/cisco-vpn-ubuntu"
-              sudo mount --bind "/" "${mount_point}/mnt/cisco-vpn-ubuntu"
+            if [ -z "$(findmnt  "$root_mount_point/mnt/cisco-vpn-ubuntu")" ]; then
+              sudo mkdir -p  "$root_mount_point/mnt/cisco-vpn-ubuntu"
+              sudo mount --bind "/" "$root_mount_point/mnt/cisco-vpn-ubuntu"
             fi
             sudo chmod -R 666 /dev/pts/*
             sudo chmod -R 666 /dev/shm/*
             sudo chmod -R 666 /dev/dri/*
             sudo chmod -R 666 /dev/snd/*
-          )
 
-          unmount_directories()(
-            mount_dev_dirs='/dev/pts /dev/shm /dev/dri /dev/snd /dev'
-            mount_dirs="$mount_dev_dirs /proc /sys /run /tmp /etc/resolv.conf"
-            for mount_dir in $mount_dirs; do
-              sudo umount "$mount_point$mount_dir"
-            done
-            sudo umount "${mount_point}/mnt/cisco-vpn-ubuntu"
-          )
-
-          increase_counter(){
             if [ ! -f "$lockfile" ]; then
               counter=1
             else
@@ -320,9 +304,9 @@ autoinstall:
               counter=$((counter + 1))
             fi
             echo "$counter" > $lockfile
-          }
+          )
 
-          decrease_counter(){
+          umount_chroot_main()(
             if [ ! -f "$lockfile" ]; then
               counter=0
             else
@@ -334,19 +318,54 @@ autoinstall:
               fi
             fi
             echo "$counter" > $lockfile
-          }
 
-          mount_directories
+            if [ 0 -lt "$counter" ]; then
+              return 0
+            fi
 
-          increase_counter
+            dev_mount_points='/dev/pts /dev/shm /dev/dri /dev/snd /dev'
+            mount_points="$dev_mount_points /proc /sys /run /tmp /etc/resolv.conf"
+            for mount_point in $mount_points; do
+              sudo umount "$root_mount_point$mount_point"
+            done
+            sudo umount "$root_mount_point/mnt/cisco-vpn-ubuntu"
+          )
 
-          sudo chroot "$mount_point" bash
+      - path: /etc/skel/enter-main-chroot.sh
+        permissions: "0777"
+        content: |
+          #!/bin/sh
+          . $HOME/chroot-main-utils.sh
 
-          decrease_counter
+          mount_chroot_main
 
-          if [ 0 -ge "$counter" ]; then
-            unmount_directories
-          fi
+          sudo chroot "$root_mount_point" su
+
+          umount_chroot_main
+
+      - path: /etc/skel/enter-main-gui.sh
+        permissions: "0777"
+        content: |
+          #!/bin/sh
+          . $HOME/chroot-main-utils.sh
+
+          mount_chroot_main
+
+          # Here I give my own desktop environment's xinitrc.
+          echo '
+          xhost +local: &
+          slstatus &
+          exec dwm' > /tmp/vpn_xinitrc
+          sudo chroot "$root_mount_point" su -c "XINITRC=/tmp/vpn_xinitrc startx"
+
+          umount_chroot_main
+
+      - path: /etc/skel/start-vpn-session.sh
+        permissions: "0777"
+        content: |
+          #!/bin/sh
+          $HOME/enter-main-gui.sh &
+          . $HOME/vpn-launch.sh
 
       - path: /etc/skel/enter-main-nspawn.sh
         permissions: "0777"
