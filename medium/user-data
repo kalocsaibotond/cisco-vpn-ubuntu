@@ -1,4 +1,5 @@
 #cloud-config
+# vim: set filetype=yaml :
 
 autoinstall:
   version: 1
@@ -353,6 +354,7 @@ autoinstall:
 
           # Here I give my own desktop environment's xinitrc.
           echo '
+          st &
           xhost +local: &
           slstatus &
           exec dwm' > /tmp/vpn_xinitrc
